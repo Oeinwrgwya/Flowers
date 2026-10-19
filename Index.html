@@ -1,11 +1,18 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bitwa kulek</title>
+<title>Ball Battle</title>
 <style>
-  :root { --bg: #14161c; --arena: #1e222b; --edge: #3a4152; --text: #eceef3; --accent: #e0884a; }
+  :root {
+    --bg: #101219;
+    --panel: #1b2030;
+    --edge: #3a4460;
+    --text: #f2f4fa;
+    --muted: #a3adc4;
+    --blue: #2f7bff;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -13,16 +20,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg);
+    background: radial-gradient(circle at 50% 30%, #1c2236, var(--bg) 70%);
     color: var(--text);
     font-family: system-ui, sans-serif;
   }
   #wrap { position: relative; width: min(100vw, 800px); }
-  canvas {
+  canvas#game {
     display: block;
     width: 100%;
-    background: var(--arena);
+    background: #171a22;
     border: 3px solid var(--edge);
+    border-radius: 8px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(47, 123, 255, 0.25);
   }
   #overlay {
     position: absolute;
@@ -32,22 +41,55 @@
     align-items: center;
     justify-content: center;
     gap: 20px;
-    background: rgba(10, 12, 16, 0.85);
+    padding: 12px;
+    border-radius: 8px;
+    background: rgba(10, 12, 18, 0.86);
+    backdrop-filter: blur(3px);
   }
   #overlay.hidden { display: none; }
-  #title { margin: 0; font-size: clamp(1.4rem, 5vw, 2.2rem); }
-  #buttons { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
-  button {
+  #title { margin: 0; font-size: clamp(1.4rem, 5vw, 2.2rem); text-shadow: 0 3px 12px rgba(47, 123, 255, 0.55); }
+  #options { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 190px;
+    padding: 14px 12px 16px;
+    color: var(--text);
+    background: linear-gradient(180deg, #262d44, var(--panel));
+    border: 2px solid var(--edge);
+    border-radius: 12px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+    font: inherit;
+    cursor: pointer;
+  }
+  .card:hover {
+    border-color: var(--blue);
+    transform: translateY(-3px);
+    box-shadow: 0 12px 28px rgba(47, 123, 255, 0.4);
+  }
+  .card:focus-visible, .btn:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+  .card canvas { width: 120px; height: 120px; }
+  .card strong { font-size: 1.2rem; }
+  .card span { font-size: 0.85rem; color: var(--muted); text-align: center; }
+  .btn {
     padding: 12px 28px;
+    font: inherit;
     font-size: 1.1rem;
     color: var(--text);
     background: transparent;
-    border: 2px solid var(--accent);
+    border: 2px solid var(--blue);
     border-radius: 8px;
+    box-shadow: 0 0 18px rgba(47, 123, 255, 0.35);
     cursor: pointer;
   }
-  button:hover { background: var(--accent); color: #14161c; }
-  button:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+  .btn:hover { background: var(--blue); }
+  @media (prefers-reduced-motion: reduce) {
+    .card { transition: none; }
+    .card:hover { transform: none; }
+  }
 </style>
 </head>
 <body>
@@ -55,7 +97,7 @@
   <canvas id="game" width="800" height="500"></canvas>
   <div id="overlay">
     <h2 id="title"></h2>
-    <div id="buttons"></div>
+    <div id="options"></div>
   </div>
 </div>
 <script>
@@ -63,21 +105,23 @@ const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const overlay = document.getElementById('overlay');
 const titleEl = document.getElementById('title');
-const buttonsEl = document.getElementById('buttons');
+const optionsEl = document.getElementById('options');
 
 const W = canvas.width;
 const H = canvas.height;
 const SPEED = 240;
 const RADIUS = 22;
 const MAX_HP = 100;
+const PLAYER_PALETTE = { main: '#2f7bff', light: '#9cc6ff', dark: '#0f2f9e' };
+const ENEMY_PALETTE = { main: '#ff3b4e', light: '#ffa3ab', dark: '#9c0f22' };
 
 const SWORD = { reach: 64, time: 0.28, sweep: 1.1, damage: 14, cooldown: 0.8, trigger: 30, tolerance: 0.45 };
 const BOW = { cooldown: 0.9, damage: 8, arrowSpeed: 460 };
 
 const CLASSES = {
   sword: {
-    name: 'Miecz',
-    color: '#e0884a',
+    name: 'Sword',
+    description: 'Close range. Swings for ' + SWORD.damage + ' damage.',
     create() {
       return { cooldown: 0.5, swing: -1, hit: false, base: 0, angle: 0, facing: 0 };
     },
@@ -112,28 +156,48 @@ const CLASSES = {
         s.cooldown = SWORD.cooldown;
       }
     },
-    draw(ball) {
+    draw(c, ball) {
       const s = ball.state;
       const angle = s.swing >= 0 ? s.angle : s.facing - SWORD.sweep;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      c.lineCap = 'round';
       if (s.swing >= 0) {
-        ctx.beginPath();
-        ctx.arc(ball.x, ball.y, SWORD.reach - 6, s.base - SWORD.sweep, s.angle);
-        ctx.strokeStyle = 'rgba(207, 214, 228, 0.35)';
-        ctx.lineWidth = 8;
-        ctx.stroke();
+        c.beginPath();
+        c.arc(ball.x, ball.y, SWORD.reach - 8, s.base - SWORD.sweep, s.angle);
+        c.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        c.lineWidth = 10;
+        c.stroke();
       }
-      ctx.beginPath();
-      ctx.moveTo(ball.x + Math.cos(angle) * (ball.r - 2), ball.y + Math.sin(angle) * (ball.r - 2));
-      ctx.lineTo(ball.x + Math.cos(angle) * SWORD.reach, ball.y + Math.sin(angle) * SWORD.reach);
-      ctx.strokeStyle = '#cfd6e4';
-      ctx.lineWidth = 5;
-      ctx.lineCap = 'round';
-      ctx.stroke();
+      const x0 = ball.x + cos * (ball.r - 2);
+      const y0 = ball.y + sin * (ball.r - 2);
+      const x1 = ball.x + cos * SWORD.reach;
+      const y1 = ball.y + sin * SWORD.reach;
+      c.beginPath();
+      c.moveTo(x0, y0);
+      c.lineTo(x1, y1);
+      c.strokeStyle = '#2f3750';
+      c.lineWidth = 8;
+      c.stroke();
+      c.beginPath();
+      c.moveTo(x0, y0);
+      c.lineTo(x1, y1);
+      c.strokeStyle = '#f4f7ff';
+      c.lineWidth = 5;
+      c.stroke();
+      const gx = ball.x + cos * (ball.r + 7);
+      const gy = ball.y + sin * (ball.r + 7);
+      c.beginPath();
+      c.moveTo(gx - sin * 10, gy + cos * 10);
+      c.lineTo(gx + sin * 10, gy - cos * 10);
+      c.strokeStyle = '#ffc93c';
+      c.lineWidth = 4;
+      c.stroke();
     }
   },
   bow: {
-    name: 'Łuk',
-    color: '#5fa86b',
+    name: 'Bow',
+    description: 'Long range. Shoots arrows for ' + BOW.damage + ' damage.',
     create() {
       return { cooldown: 0.6, facing: 0 };
     },
@@ -153,33 +217,39 @@ const CLASSES = {
         });
       }
     },
-    draw(ball) {
+    draw(c, ball) {
       const f = ball.state.facing;
       const r = ball.r + 9;
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, r, f - 0.9, f + 0.9);
-      ctx.strokeStyle = '#8b5a2b';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(ball.x + Math.cos(f - 0.9) * r, ball.y + Math.sin(f - 0.9) * r);
-      ctx.lineTo(ball.x + Math.cos(f + 0.9) * r, ball.y + Math.sin(f + 0.9) * r);
-      ctx.strokeStyle = 'rgba(236, 238, 243, 0.6)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      c.lineCap = 'round';
+      c.beginPath();
+      c.arc(ball.x, ball.y, r, f - 0.9, f + 0.9);
+      c.strokeStyle = '#3d2410';
+      c.lineWidth = 8;
+      c.stroke();
+      c.beginPath();
+      c.arc(ball.x, ball.y, r, f - 0.9, f + 0.9);
+      c.strokeStyle = '#e0a255';
+      c.lineWidth = 4.5;
+      c.stroke();
+      c.beginPath();
+      c.moveTo(ball.x + Math.cos(f - 0.9) * r, ball.y + Math.sin(f - 0.9) * r);
+      c.lineTo(ball.x + Math.cos(f + 0.9) * r, ball.y + Math.sin(f + 0.9) * r);
+      c.strokeStyle = 'rgba(242, 244, 250, 0.75)';
+      c.lineWidth = 1.2;
+      c.stroke();
     }
   }
 };
 
 const game = { mode: 'menu', balls: [], arrows: [], player: null, enemy: null };
 
-function createBall(key, x, y, isPlayer) {
+function createBall(key, x, y, palette, isPlayer) {
   const cls = CLASSES[key];
   const angle = Math.random() * Math.PI * 2;
   return {
     key,
     cls,
+    palette,
     isPlayer,
     x,
     y,
@@ -194,23 +264,83 @@ function createBall(key, x, y, isPlayer) {
 function startFight(playerKey) {
   const keys = Object.keys(CLASSES);
   const enemyKey = keys[Math.floor(Math.random() * keys.length)];
-  game.player = createBall(playerKey, W * 0.25, H * (0.3 + Math.random() * 0.4), true);
-  game.enemy = createBall(enemyKey, W * 0.75, H * (0.3 + Math.random() * 0.4), false);
+  game.player = createBall(playerKey, W * 0.25, H * (0.3 + Math.random() * 0.4), PLAYER_PALETTE, true);
+  game.enemy = createBall(enemyKey, W * 0.75, H * (0.3 + Math.random() * 0.4), ENEMY_PALETTE, false);
   game.balls = [game.player, game.enemy];
   game.arrows = [];
   game.mode = 'fight';
   overlay.classList.add('hidden');
 }
 
-function showMenu(text) {
+function drawEyes(c, ball) {
+  const f = ball.state.facing;
+  const dx = Math.cos(f);
+  const dy = Math.sin(f);
+  [-1, 1].forEach((side) => {
+    const ex = ball.x + dx * ball.r * 0.3 - dy * ball.r * 0.32 * side;
+    const ey = ball.y + dy * ball.r * 0.3 + dx * ball.r * 0.32 * side;
+    c.beginPath();
+    c.arc(ex, ey, ball.r * 0.24, 0, Math.PI * 2);
+    c.fillStyle = '#ffffff';
+    c.fill();
+    c.beginPath();
+    c.arc(ex + dx * ball.r * 0.09, ey + dy * ball.r * 0.09, ball.r * 0.12, 0, Math.PI * 2);
+    c.fillStyle = '#10131a';
+    c.fill();
+  });
+}
+
+function drawBallBody(c, ball) {
+  const p = ball.palette;
+  c.beginPath();
+  c.ellipse(ball.x, ball.y + ball.r * 0.9, ball.r * 0.95, ball.r * 0.32, 0, 0, Math.PI * 2);
+  c.fillStyle = 'rgba(0, 0, 0, 0.38)';
+  c.fill();
+  const g = c.createRadialGradient(ball.x - ball.r * 0.4, ball.y - ball.r * 0.45, ball.r * 0.1, ball.x, ball.y, ball.r);
+  g.addColorStop(0, p.light);
+  g.addColorStop(0.45, p.main);
+  g.addColorStop(1, p.dark);
+  c.beginPath();
+  c.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  c.fillStyle = g;
+  c.fill();
+  c.lineWidth = 2.5;
+  c.strokeStyle = p.dark;
+  c.stroke();
+  c.beginPath();
+  c.ellipse(ball.x - ball.r * 0.42, ball.y - ball.r * 0.52, ball.r * 0.28, ball.r * 0.15, -0.7, 0, Math.PI * 2);
+  c.fillStyle = 'rgba(255, 255, 255, 0.45)';
+  c.fill();
+  drawEyes(c, ball);
+}
+
+function renderPreview(previewCanvas, key) {
+  const c = previewCanvas.getContext('2d');
+  const cls = CLASSES[key];
+  const ball = { x: 80, y: 78, r: RADIUS, palette: PLAYER_PALETTE, cls, state: cls.create() };
+  ball.state.facing = 0.5;
+  drawBallBody(c, ball);
+  cls.draw(c, ball);
+}
+
+function showMenu() {
   game.mode = 'menu';
-  titleEl.textContent = text;
-  buttonsEl.innerHTML = '';
+  titleEl.textContent = 'Choose your ball';
+  optionsEl.innerHTML = '';
   Object.keys(CLASSES).forEach((key) => {
-    const btn = document.createElement('button');
-    btn.textContent = CLASSES[key].name;
-    btn.addEventListener('click', () => startFight(key));
-    buttonsEl.appendChild(btn);
+    const card = document.createElement('button');
+    card.className = 'card';
+    const preview = document.createElement('canvas');
+    preview.width = 160;
+    preview.height = 160;
+    const name = document.createElement('strong');
+    name.textContent = CLASSES[key].name;
+    const desc = document.createElement('span');
+    desc.textContent = CLASSES[key].description;
+    card.append(preview, name, desc);
+    card.addEventListener('click', () => startFight(key));
+    optionsEl.appendChild(card);
+    renderPreview(preview, key);
   });
   overlay.classList.remove('hidden');
 }
@@ -218,11 +348,12 @@ function showMenu(text) {
 function showResult(text) {
   game.mode = 'over';
   titleEl.textContent = text;
-  buttonsEl.innerHTML = '';
+  optionsEl.innerHTML = '';
   const btn = document.createElement('button');
-  btn.textContent = 'Zagraj ponownie';
-  btn.addEventListener('click', () => showMenu('Wybierz klasę'));
-  buttonsEl.appendChild(btn);
+  btn.className = 'btn';
+  btn.textContent = 'Play again';
+  btn.addEventListener('click', showMenu);
+  optionsEl.appendChild(btn);
   overlay.classList.remove('hidden');
 }
 
@@ -291,52 +422,105 @@ function update(dt) {
   updateArrows(dt);
   player.hp = Math.max(0, player.hp);
   enemy.hp = Math.max(0, enemy.hp);
-  if (player.hp <= 0 && enemy.hp <= 0) showResult('Remis');
-  else if (enemy.hp <= 0) showResult('Wygrałeś!');
-  else if (player.hp <= 0) showResult('Przegrałeś!');
+  if (player.hp <= 0 && enemy.hp <= 0) showResult('Draw');
+  else if (enemy.hp <= 0) showResult('You win!');
+  else if (player.hp <= 0) showResult('You lose!');
+}
+
+function drawArena() {
+  const g = ctx.createRadialGradient(W / 2, H / 2, 60, W / 2, H / 2, W * 0.65);
+  g.addColorStop(0, '#2a3248');
+  g.addColorStop(1, '#141720');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.beginPath();
+  for (let x = 50; x < W; x += 50) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+  }
+  for (let y = 50; y < H; y += 50) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+  }
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.045)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, 70, 0, Math.PI * 2);
+  ctx.moveTo(W / 2, 0);
+  ctx.lineTo(W / 2, H);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(47, 123, 255, 0.25)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, W - 4, H - 4);
 }
 
 function drawBall(b) {
-  ctx.beginPath();
-  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-  ctx.fillStyle = b.cls.color;
-  ctx.fill();
-  ctx.lineWidth = b.isPlayer ? 4 : 2;
-  ctx.strokeStyle = b.isPlayer ? '#ffffff' : 'rgba(0, 0, 0, 0.5)';
-  ctx.stroke();
-  b.cls.draw(b);
-  const barW = 56;
+  drawBallBody(ctx, b);
+  b.cls.draw(ctx, b);
+  const barW = 60;
+  const barH = 8;
   const barX = b.x - barW / 2;
-  const barY = b.y - b.r - 26;
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.fillRect(barX, barY, barW, 7);
-  ctx.fillStyle = b.hp > 30 ? '#6fcf7f' : '#e05a4f';
-  ctx.fillRect(barX, barY, (barW * b.hp) / MAX_HP, 7);
-  ctx.fillStyle = '#eceef3';
-  ctx.font = '12px system-ui, sans-serif';
+  const barY = b.y - b.r - 28;
+  const ratio = b.hp / MAX_HP;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(barX, barY, barW, barH);
+  ctx.fillStyle = ratio > 0.6 ? '#3ddc84' : ratio > 0.3 ? '#ffd23f' : '#ff7a1a';
+  ctx.fillRect(barX + 1, barY + 1, (barW - 2) * ratio, barH - 2);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX + 0.5, barY + 0.5, barW - 1, barH - 1);
+  const label = (b.isPlayer ? 'You' : 'Enemy') + ' - ' + b.cls.name + ' ' + Math.ceil(b.hp);
+  ctx.font = 'bold 12px system-ui, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText((b.isPlayer ? 'Ty · ' : 'Wróg · ') + b.cls.name + ' ' + Math.ceil(b.hp), b.x, barY - 5);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+  ctx.strokeText(label, b.x, barY - 5);
+  ctx.fillStyle = b.palette.light;
+  ctx.fillText(label, b.x, barY - 5);
 }
 
 function drawArrow(a) {
-  const len = 18;
-  const tx = a.x - Math.cos(a.angle) * len;
-  const ty = a.y - Math.sin(a.angle) * len;
+  const len = 20;
+  const cos = Math.cos(a.angle);
+  const sin = Math.sin(a.angle);
+  const tx = a.x - cos * len;
+  const ty = a.y - sin * len;
+  ctx.beginPath();
+  ctx.ellipse(a.x, a.y + 14, 9, 3, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+  ctx.fill();
+  ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(tx, ty);
   ctx.lineTo(a.x, a.y);
-  ctx.strokeStyle = '#d8c9a3';
-  ctx.lineWidth = 2;
-  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#efe2b8';
+  ctx.lineWidth = 2.5;
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(a.x, a.y, 2.5, 0, Math.PI * 2);
-  ctx.fillStyle = '#eceef3';
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - cos * 5 + sin * 4, ty - sin * 5 - cos * 4);
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(tx - cos * 5 - sin * 4, ty - sin * 5 + cos * 4);
+  ctx.strokeStyle = a.owner.palette.light;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.shadowColor = a.owner.palette.main;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(a.x + cos * 7, a.y + sin * 7);
+  ctx.lineTo(a.x - cos * 2 + sin * 4.5, a.y - sin * 2 - cos * 4.5);
+  ctx.lineTo(a.x - cos * 2 - sin * 4.5, a.y - sin * 2 + cos * 4.5);
+  ctx.closePath();
+  ctx.fillStyle = a.owner.palette.main;
   ctx.fill();
+  ctx.shadowBlur = 0;
 }
 
 function draw() {
-  ctx.clearRect(0, 0, W, H);
+  drawArena();
   game.arrows.forEach(drawArrow);
   game.balls.forEach(drawBall);
 }
@@ -350,7 +534,7 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-showMenu('Wybierz klasę');
+showMenu();
 requestAnimationFrame(loop);
 </script>
 </body>
