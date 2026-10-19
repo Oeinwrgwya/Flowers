@@ -1,1 +1,357 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitwa kulek</title>
+<style>
+  :root { --bg: #14161c; --arena: #1e222b; --edge: #3a4152; --text: #eceef3; --accent: #e0884a; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+  }
+  #wrap { position: relative; width: min(100vw, 800px); }
+  canvas {
+    display: block;
+    width: 100%;
+    background: var(--arena);
+    border: 3px solid var(--edge);
+  }
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    background: rgba(10, 12, 16, 0.85);
+  }
+  #overlay.hidden { display: none; }
+  #title { margin: 0; font-size: clamp(1.4rem, 5vw, 2.2rem); }
+  #buttons { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  button {
+    padding: 12px 28px;
+    font-size: 1.1rem;
+    color: var(--text);
+    background: transparent;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent); color: #14161c; }
+  button:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="800" height="500"></canvas>
+  <div id="overlay">
+    <h2 id="title"></h2>
+    <div id="buttons"></div>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const titleEl = document.getElementById('title');
+const buttonsEl = document.getElementById('buttons');
 
+const W = canvas.width;
+const H = canvas.height;
+const SPEED = 240;
+const RADIUS = 22;
+const MAX_HP = 100;
+
+const SWORD = { reach: 64, time: 0.28, sweep: 1.1, damage: 14, cooldown: 0.8, trigger: 30, tolerance: 0.45 };
+const BOW = { cooldown: 0.9, damage: 8, arrowSpeed: 460 };
+
+const CLASSES = {
+  sword: {
+    name: 'Miecz',
+    color: '#e0884a',
+    create() {
+      return { cooldown: 0.5, swing: -1, hit: false, base: 0, angle: 0, facing: 0 };
+    },
+    update(ball, enemy, dt) {
+      const s = ball.state;
+      s.cooldown -= dt;
+      const dx = enemy.x - ball.x;
+      const dy = enemy.y - ball.y;
+      const dist = Math.hypot(dx, dy);
+      const toEnemy = Math.atan2(dy, dx);
+      if (s.swing < 0) {
+        s.facing = toEnemy;
+        if (s.cooldown <= 0 && dist < SWORD.reach + enemy.r + SWORD.trigger) {
+          s.swing = 0;
+          s.hit = false;
+          s.base = toEnemy;
+        }
+        return;
+      }
+      s.swing += dt;
+      const t = Math.min(s.swing / SWORD.time, 1);
+      s.angle = s.base - SWORD.sweep + 2 * SWORD.sweep * t;
+      if (!s.hit && dist < SWORD.reach + enemy.r) {
+        const diff = Math.atan2(Math.sin(s.angle - toEnemy), Math.cos(s.angle - toEnemy));
+        if (Math.abs(diff) < SWORD.tolerance) {
+          enemy.hp -= SWORD.damage;
+          s.hit = true;
+        }
+      }
+      if (t >= 1) {
+        s.swing = -1;
+        s.cooldown = SWORD.cooldown;
+      }
+    },
+    draw(ball) {
+      const s = ball.state;
+      const angle = s.swing >= 0 ? s.angle : s.facing - SWORD.sweep;
+      if (s.swing >= 0) {
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, SWORD.reach - 6, s.base - SWORD.sweep, s.angle);
+        ctx.strokeStyle = 'rgba(207, 214, 228, 0.35)';
+        ctx.lineWidth = 8;
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(ball.x + Math.cos(angle) * (ball.r - 2), ball.y + Math.sin(angle) * (ball.r - 2));
+      ctx.lineTo(ball.x + Math.cos(angle) * SWORD.reach, ball.y + Math.sin(angle) * SWORD.reach);
+      ctx.strokeStyle = '#cfd6e4';
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  },
+  bow: {
+    name: 'Łuk',
+    color: '#5fa86b',
+    create() {
+      return { cooldown: 0.6, facing: 0 };
+    },
+    update(ball, enemy, dt, game) {
+      const s = ball.state;
+      s.cooldown -= dt;
+      s.facing = Math.atan2(enemy.y - ball.y, enemy.x - ball.x);
+      if (s.cooldown <= 0) {
+        s.cooldown = BOW.cooldown;
+        game.arrows.push({
+          x: ball.x + Math.cos(s.facing) * ball.r,
+          y: ball.y + Math.sin(s.facing) * ball.r,
+          vx: Math.cos(s.facing) * BOW.arrowSpeed,
+          vy: Math.sin(s.facing) * BOW.arrowSpeed,
+          angle: s.facing,
+          owner: ball
+        });
+      }
+    },
+    draw(ball) {
+      const f = ball.state.facing;
+      const r = ball.r + 9;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, r, f - 0.9, f + 0.9);
+      ctx.strokeStyle = '#8b5a2b';
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(ball.x + Math.cos(f - 0.9) * r, ball.y + Math.sin(f - 0.9) * r);
+      ctx.lineTo(ball.x + Math.cos(f + 0.9) * r, ball.y + Math.sin(f + 0.9) * r);
+      ctx.strokeStyle = 'rgba(236, 238, 243, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+};
+
+const game = { mode: 'menu', balls: [], arrows: [], player: null, enemy: null };
+
+function createBall(key, x, y, isPlayer) {
+  const cls = CLASSES[key];
+  const angle = Math.random() * Math.PI * 2;
+  return {
+    key,
+    cls,
+    isPlayer,
+    x,
+    y,
+    r: RADIUS,
+    vx: Math.cos(angle) * SPEED,
+    vy: Math.sin(angle) * SPEED,
+    hp: MAX_HP,
+    state: cls.create()
+  };
+}
+
+function startFight(playerKey) {
+  const keys = Object.keys(CLASSES);
+  const enemyKey = keys[Math.floor(Math.random() * keys.length)];
+  game.player = createBall(playerKey, W * 0.25, H * (0.3 + Math.random() * 0.4), true);
+  game.enemy = createBall(enemyKey, W * 0.75, H * (0.3 + Math.random() * 0.4), false);
+  game.balls = [game.player, game.enemy];
+  game.arrows = [];
+  game.mode = 'fight';
+  overlay.classList.add('hidden');
+}
+
+function showMenu(text) {
+  game.mode = 'menu';
+  titleEl.textContent = text;
+  buttonsEl.innerHTML = '';
+  Object.keys(CLASSES).forEach((key) => {
+    const btn = document.createElement('button');
+    btn.textContent = CLASSES[key].name;
+    btn.addEventListener('click', () => startFight(key));
+    buttonsEl.appendChild(btn);
+  });
+  overlay.classList.remove('hidden');
+}
+
+function showResult(text) {
+  game.mode = 'over';
+  titleEl.textContent = text;
+  buttonsEl.innerHTML = '';
+  const btn = document.createElement('button');
+  btn.textContent = 'Zagraj ponownie';
+  btn.addEventListener('click', () => showMenu('Wybierz klasę'));
+  buttonsEl.appendChild(btn);
+  overlay.classList.remove('hidden');
+}
+
+function moveBall(b, dt) {
+  b.x += b.vx * dt;
+  b.y += b.vy * dt;
+  if (b.x < b.r) { b.x = b.r; b.vx = Math.abs(b.vx); }
+  if (b.x > W - b.r) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
+  if (b.y < b.r) { b.y = b.r; b.vy = Math.abs(b.vy); }
+  if (b.y > H - b.r) { b.y = H - b.r; b.vy = -Math.abs(b.vy); }
+}
+
+function normalizeSpeed(b) {
+  const len = Math.hypot(b.vx, b.vy) || 1;
+  b.vx = (b.vx / len) * SPEED;
+  b.vy = (b.vy / len) * SPEED;
+}
+
+function collideBalls(a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy);
+  const min = a.r + b.r;
+  if (dist >= min || dist === 0) return;
+  const nx = dx / dist;
+  const ny = dy / dist;
+  const overlap = min - dist;
+  a.x -= (nx * overlap) / 2;
+  a.y -= (ny * overlap) / 2;
+  b.x += (nx * overlap) / 2;
+  b.y += (ny * overlap) / 2;
+  const va = a.vx * nx + a.vy * ny;
+  const vb = b.vx * nx + b.vy * ny;
+  if (va > vb) {
+    a.vx += (vb - va) * nx;
+    a.vy += (vb - va) * ny;
+    b.vx += (va - vb) * nx;
+    b.vy += (va - vb) * ny;
+    normalizeSpeed(a);
+    normalizeSpeed(b);
+  }
+}
+
+function updateArrows(dt) {
+  game.arrows = game.arrows.filter((arrow) => {
+    arrow.x += arrow.vx * dt;
+    arrow.y += arrow.vy * dt;
+    if (arrow.x < 0 || arrow.x > W || arrow.y < 0 || arrow.y > H) return false;
+    for (const ball of game.balls) {
+      if (ball === arrow.owner) continue;
+      if (Math.hypot(ball.x - arrow.x, ball.y - arrow.y) < ball.r + 2) {
+        ball.hp -= BOW.damage;
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function update(dt) {
+  const { player, enemy } = game;
+  game.balls.forEach((b) => moveBall(b, dt));
+  collideBalls(player, enemy);
+  player.cls.update(player, enemy, dt, game);
+  enemy.cls.update(enemy, player, dt, game);
+  updateArrows(dt);
+  player.hp = Math.max(0, player.hp);
+  enemy.hp = Math.max(0, enemy.hp);
+  if (player.hp <= 0 && enemy.hp <= 0) showResult('Remis');
+  else if (enemy.hp <= 0) showResult('Wygrałeś!');
+  else if (player.hp <= 0) showResult('Przegrałeś!');
+}
+
+function drawBall(b) {
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = b.cls.color;
+  ctx.fill();
+  ctx.lineWidth = b.isPlayer ? 4 : 2;
+  ctx.strokeStyle = b.isPlayer ? '#ffffff' : 'rgba(0, 0, 0, 0.5)';
+  ctx.stroke();
+  b.cls.draw(b);
+  const barW = 56;
+  const barX = b.x - barW / 2;
+  const barY = b.y - b.r - 26;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(barX, barY, barW, 7);
+  ctx.fillStyle = b.hp > 30 ? '#6fcf7f' : '#e05a4f';
+  ctx.fillRect(barX, barY, (barW * b.hp) / MAX_HP, 7);
+  ctx.fillStyle = '#eceef3';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText((b.isPlayer ? 'Ty · ' : 'Wróg · ') + b.cls.name + ' ' + Math.ceil(b.hp), b.x, barY - 5);
+}
+
+function drawArrow(a) {
+  const len = 18;
+  const tx = a.x - Math.cos(a.angle) * len;
+  const ty = a.y - Math.sin(a.angle) * len;
+  ctx.beginPath();
+  ctx.moveTo(tx, ty);
+  ctx.lineTo(a.x, a.y);
+  ctx.strokeStyle = '#d8c9a3';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(a.x, a.y, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#eceef3';
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  game.arrows.forEach(drawArrow);
+  game.balls.forEach(drawBall);
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  if (game.mode === 'fight') update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+showMenu('Wybierz klasę');
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
